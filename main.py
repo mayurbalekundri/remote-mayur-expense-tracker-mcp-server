@@ -2,12 +2,21 @@ from fastmcp import FastMCP
 import os
 import sqlite3
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "expenses.db")
-CATEGORIES_PATH = os.path.join(os.path.dirname(__file__), "categories.json")
+# Use a writable directory for the database.
+# Precedence: DB_PATH env var → /tmp (always writable) → script dir as fallback
+_DEFAULT_DB = os.path.join(
+    os.environ.get("EXPENSE_DB_DIR", "/tmp"),
+    "expenses.db"
+)
+DB_PATH = os.environ.get("DB_PATH", _DEFAULT_DB)
+
+CATEGORIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "categories.json")
 
 mcp = FastMCP("ExpenseTracker")
 
 def init_db():
+    # Ensure the parent directory exists (important when DB_PATH is custom)
+    os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
     with sqlite3.connect(DB_PATH) as c:
         c.execute("""
             CREATE TABLE IF NOT EXISTS expenses(
@@ -29,6 +38,7 @@ def init_db():
                 note TEXT DEFAULT ''
             )
         """)
+        c.commit()
 
 init_db()
 
@@ -37,11 +47,13 @@ init_db()
 @mcp.tool()
 def add_expense(date, amount, category, subcategory="", note=""):
     '''Add a new expense entry to the database.'''
-    with sqlite3.connect(DB_PATH) as c:
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
+        c.execute("PRAGMA journal_mode=WAL;")  # improves concurrent write safety
         cur = c.execute(
             "INSERT INTO expenses(date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
-            (date, amount, category, subcategory, note)
+            (date, float(amount), category, subcategory, note)
         )
+        c.commit()
         return {"status": "ok", "id": cur.lastrowid}
 
 @mcp.tool()
@@ -85,11 +97,11 @@ def update_expense(id, date=None, amount=None, category=None, subcategory=None, 
     Only the fields you provide will be updated; others remain unchanged.
     '''
     fields = {}
-    if date       is not None: fields["date"]       = date
-    if amount     is not None: fields["amount"]     = amount
-    if category   is not None: fields["category"]   = category
+    if date        is not None: fields["date"]        = date
+    if amount      is not None: fields["amount"]      = float(amount)
+    if category    is not None: fields["category"]    = category
     if subcategory is not None: fields["subcategory"] = subcategory
-    if note       is not None: fields["note"]       = note
+    if note        is not None: fields["note"]        = note
 
     if not fields:
         return {"status": "error", "message": "No fields provided to update."}
@@ -98,10 +110,12 @@ def update_expense(id, date=None, amount=None, category=None, subcategory=None, 
     params = list(fields.values()) + [id]
 
     with sqlite3.connect(DB_PATH) as c:
+        c.execute("PRAGMA journal_mode=WAL;")
         cur = c.execute(
             f"UPDATE expenses SET {set_clause} WHERE id = ?",
             params
         )
+        c.commit()
         if cur.rowcount == 0:
             return {"status": "error", "message": f"No expense found with id {id}."}
         return {"status": "ok", "updated_id": id, "updated_fields": list(fields.keys())}
@@ -110,7 +124,9 @@ def update_expense(id, date=None, amount=None, category=None, subcategory=None, 
 def delete_expense(id):
     '''Delete an expense record by ID.'''
     with sqlite3.connect(DB_PATH) as c:
+        c.execute("PRAGMA journal_mode=WAL;")
         cur = c.execute("DELETE FROM expenses WHERE id = ?", (id,))
+        c.commit()
         if cur.rowcount == 0:
             return {"status": "error", "message": f"No expense found with id {id}."}
         return {"status": "ok", "deleted_id": id}
@@ -120,11 +136,13 @@ def delete_expense(id):
 @mcp.tool()
 def add_income(date, amount, source, subsource="", note=""):
     '''Add a new income entry to the database.'''
-    with sqlite3.connect(DB_PATH) as c:
+    with sqlite3.connect(DB_PATH, check_same_thread=False) as c:
+        c.execute("PRAGMA journal_mode=WAL;")
         cur = c.execute(
             "INSERT INTO income(date, amount, source, subsource, note) VALUES (?,?,?,?,?)",
-            (date, amount, source, subsource, note)
+            (date, float(amount), source, subsource, note)
         )
+        c.commit()
         return {"status": "ok", "id": cur.lastrowid}
 
 @mcp.tool()
@@ -169,7 +187,7 @@ def update_income(id, date=None, amount=None, source=None, subsource=None, note=
     '''
     fields = {}
     if date      is not None: fields["date"]      = date
-    if amount    is not None: fields["amount"]    = amount
+    if amount    is not None: fields["amount"]    = float(amount)
     if source    is not None: fields["source"]    = source
     if subsource is not None: fields["subsource"] = subsource
     if note      is not None: fields["note"]      = note
@@ -181,10 +199,12 @@ def update_income(id, date=None, amount=None, source=None, subsource=None, note=
     params = list(fields.values()) + [id]
 
     with sqlite3.connect(DB_PATH) as c:
+        c.execute("PRAGMA journal_mode=WAL;")
         cur = c.execute(
             f"UPDATE income SET {set_clause} WHERE id = ?",
             params
         )
+        c.commit()
         if cur.rowcount == 0:
             return {"status": "error", "message": f"No income found with id {id}."}
         return {"status": "ok", "updated_id": id, "updated_fields": list(fields.keys())}
@@ -193,7 +213,9 @@ def update_income(id, date=None, amount=None, source=None, subsource=None, note=
 def delete_income(id):
     '''Delete an income record by ID.'''
     with sqlite3.connect(DB_PATH) as c:
+        c.execute("PRAGMA journal_mode=WAL;")
         cur = c.execute("DELETE FROM income WHERE id = ?", (id,))
+        c.commit()
         if cur.rowcount == 0:
             return {"status": "error", "message": f"No income found with id {id}."}
         return {"status": "ok", "deleted_id": id}
@@ -228,14 +250,5 @@ def categories():
         return f.read()
 
 
-
-if __name__=="__main__":
-    mcp.run(transport="http",host="0.0.0.0",port=8000)
-
-
-
-
-
-
-
-
+if __name__ == "__main__":
+    mcp.run(transport="http", host="0.0.0.0", port=8000)
